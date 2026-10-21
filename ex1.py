@@ -1,90 +1,138 @@
 import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
-from tensorflow.keras.applications import VGG16
-from tensorflow.keras.applications.vgg16 import preprocess_input, decode_predictions
-from tensorflow.keras.utils import get_file
-from PIL import Image
 import os
 
-# 1. Load pretrained VGG16
-print("Loading VGG16 model...")
-model = VGG16(weights="imagenet")
+from tensorflow.keras.applications import VGG16
+from tensorflow.keras.applications.vgg16 import preprocess_input,decode_predictions
+from tensorflow.keras.utils import image_dataset_from_directory
 
-# 2. Image URLs
-urls = [
-    "https://storage.googleapis.com/download.tensorflow.org/example_images/592px-Red_sunflower.jpg",
-    "https://storage.googleapis.com/download.tensorflow.org/example_images/grace_hopper.jpg"
+DATASET="imagenette-160"
+
+selected_classes=[
+    "n01440764",   # tench
+    "n02102040",   # English springer
+    "n03028079",   # church
+    "n03445777",   # golf ball
+    "n03888257"
 ]
 
-images = []
 
-# 3. Load and preprocess images
-for url in urls:
-    file = get_file(os.path.basename(url), url)
+train_path=os.path.join(
+    DATASET,
+    "train"
+)
 
-    img = Image.open(file).convert("RGB")
-    img = img.resize((224, 224))
+train_dataset=image_dataset_from_directory(
+    train_path,
+    labels="inferred",
+    class_names=selected_classes,
+    image_size=(224,224),
+    batch_size=10,
+    shuffle=True
+)
 
-    x = np.array(img, dtype=np.float32)
-    x = preprocess_input(x)
+val_path=os.path.join(
+    DATASET,
+    "val"
+)
 
-    images.append(x)
+val_dataset=image_dataset_from_directory(
+    val_path,
+    labels="inferred",
+    class_names=selected_classes,
+    image_size=(224,224),
+    batch_size=10,
+    shuffle=True
+)
 
-# Convert list to NumPy array
-x = np.array(images)
+print("Selected Class")
+print(selected_classes)
 
-# 4. Display images
-plt.figure(figsize=(8, 4))
 
-for i in range(len(images)):
-    plt.subplot(1, len(images), i + 1)
+model=VGG16(
+    weights="imagenet",
+    include_top=True
+)
+print("model Loaded")
 
-    # Convert image for display
-    display_img = (x[i] - x[i].min()) / (x[i].max() - x[i].min())
+images , labels=next(
+    iter(val_dataset)
+)
 
-    plt.imshow(display_img)
+print("Images")
+print(images.shape)
+
+plt.figure(figsize=(112,8))
+
+for i in range(min(10,len(images))):
+
+    plt.subplot(2,5,i+1)
+
+    plt.imshow(
+        images[i].numpy().astype("uint8")
+    )
+
+    plt.title(
+        selected_classes[labels[i]]
+    )
+
     plt.axis("off")
-    plt.title(f"Image {i + 1}")
 
 plt.tight_layout()
 plt.show()
 
-# 5. Predict
-print("\nPredicting images...")
-pred = model.predict(x)
 
-# 6. Top-5 predictions
+x=images.numpy().astype(np.float32)
+
+x=preprocess_input(x)
+
+print("Preprocessed image")
+print(x.shape)
+
+pred=model.predict(x)
+
 for i in range(len(pred)):
+    print("Images",i+1)
 
-    print("\nImage", i + 1)
+    print("Original labels:",selected_classes[labels[i]])
 
-    # IMPORTANT:
-    # Use pred[i:i+1] instead of pred[i]
-    predictions = decode_predictions(pred[i:i + 1], top=5)[0]
+    top5=decode_predictions(
+        pred[i:i+1],
+        top=5
+    )[0]
 
-    for label, name, prob in predictions:
-        print(f"{name}: {prob * 100:.2f}%")
+    for _,name,probability in top5:
+        print(
+            f"{name}",
+            f"{probability*100:.2f}%"
+        )
 
-# 7. Intermediate representation
 
-layer_model = tf.keras.Model(
+feature_model=tf.keras.Model(
     inputs=model.input,
-    outputs=model.get_layer("block3_conv3").output
+    outputs=model.get_layer(
+        "block3_conv3"
+    ).output
 )
 
-features = layer_model.predict(x)
+features=feature_model.predict(x)
 
-print("\nInput shape:", x.shape)
-print("Intermediate representation:", features.shape)
-print("Output shape:", pred.shape)
+print("Input Shape:",x.shape)
+print("Intermediate representation:",features.shape)
+print("Output shape:",pred.shape)
 
-# 8. Display feature map
 plt.figure(figsize=(6, 6))
 
-plt.imshow(features[0, :, :, 0], cmap="gray")
+plt.imshow(
+    features[0, :, :, 0],
+    cmap="gray"
+)
 
-plt.title("Intermediate Representation - Block3 Conv3")
+plt.title(
+    "Intermediate Representation - Block3 Conv3"
+)
+
 plt.axis("off")
 
 plt.show()

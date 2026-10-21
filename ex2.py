@@ -1,63 +1,203 @@
-import numpy as np
 import tensorflow as tf
+import numpy as np
 import matplotlib.pyplot as plt
-from tensorflow.keras.applications import ResNet50
-from tensorflow.keras.applications.resnet50 import preprocess_input
-from tensorflow.keras.utils import get_file
-from PIL import Image
+import os
 
-# 1. Load CNN
-model = ResNet50(weights="imagenet")
+from tensorflow.keras.applications import VGG16
+from tensorflow.keras.applications.vgg16 import preprocess_input
+from tensorflow.keras.utils import image_dataset_from_directory
 
-# 2. Load image
-url = "https://storage.googleapis.com/download.tensorflow.org/example_images/592px-Red_sunflower.jpg"
-file = get_file("image.jpg", url)
 
-img = Image.open(file).resize((224,224))
-x = preprocess_input(np.array(img))
-x = np.expand_dims(x, 0)
+# ============================================================
+# 1. DATASET PATH
+# ============================================================
 
-# 3. Select CNN layers
-layers = [
-    "conv1_conv",
-    "conv2_block3_out",
-    "conv4_block6_out"
+DATASET = "imagenette-160"
+
+selected_classes = [
+    "n01440764",   # tench
+    "n02102040",   # English springer
+    "n03028079",   # church
+    "n03445777",   # golf ball
+    "n03888257"    # parachute
+]
+  
+
+# ============================================================
+# 2. LOAD DATASET
+# ============================================================
+
+val_path = os.path.join(DATASET, "val")
+
+val_dataset = image_dataset_from_directory(
+    val_path,
+    labels="inferred",
+    class_names=selected_classes,
+    image_size=(224, 224),
+    batch_size=5,
+    shuffle=True
+)
+
+print("Selected Classes:")
+print(selected_classes)
+
+
+# ============================================================
+# 3. LOAD PRE-TRAINED VGG16
+# ============================================================
+
+model = VGG16(
+    weights="imagenet",
+    include_top=True
+)
+
+print("VGG16 Model Loaded")
+
+
+# ============================================================
+# 4. GET ONE IMAGE
+# ============================================================
+
+images, labels = next(iter(val_dataset))
+
+image = images[0:1].numpy().astype(np.float32)
+
+print("Input Shape:", image.shape)
+
+
+# ============================================================
+# 5. DISPLAY ORIGINAL IMAGE
+# ============================================================
+
+plt.figure(figsize=(5, 5))
+
+plt.imshow(images[0].numpy().astype("uint8"))
+
+plt.title(
+    "Original Image: " +
+    selected_classes[int(labels[0].numpy())]
+)
+
+plt.axis("off")
+plt.show()
+
+
+# ============================================================
+# 6. PREPROCESS IMAGE
+# ============================================================
+
+x = preprocess_input(image)
+
+print("Preprocessed Image Shape:", x.shape)
+
+
+# ============================================================
+# 7. SELECT THREE CONVOLUTIONAL LAYERS
+# ============================================================
+
+layer_names = [
+    "block1_conv1",   # Shallow layer
+    "block3_conv3",   # Intermediate layer
+    "block5_conv3"    # Deep layer
 ]
 
-# 4. Extract feature maps
-outputs = [model.get_layer(l).output for l in layers]
-fm = tf.keras.Model(model.input, outputs).predict(x)
+feature_model = tf.keras.Model(
+    inputs=model.input,
+    outputs=[
+        model.get_layer(name).output
+        for name in layer_names
+    ]
+)
 
-# 5. Display feature maps
-for name, f in zip(layers, fm):
 
-    print(name, ":", f.shape)
+# ============================================================
+# 8. EXTRACT FEATURE MAPS
+# ============================================================
 
-    plt.figure(figsize=(8,4))
+features = feature_model.predict(x)
 
-    for i in range(6):
-        plt.subplot(2,3,i+1)
-        plt.imshow(f[0,:,:,i], cmap="gray")
+for name, feature in zip(layer_names, features):
+
+    print("\nLayer:", name)
+    print("Feature Map Shape:", feature.shape)
+
+
+# ============================================================
+# 9. VISUALIZE FEATURE MAPS
+# ============================================================
+
+for name, feature in zip(layer_names, features):
+
+    plt.figure(figsize=(12, 6))
+
+    plt.suptitle(
+        "Feature Maps - " + name
+    )
+
+    for i in range(8):
+
+        plt.subplot(2, 4, i + 1)
+
+        plt.imshow(
+            feature[0, :, :, i],
+            cmap="viridis"
+        )
+
+        plt.title("Channel " + str(i + 1))
         plt.axis("off")
 
-    plt.suptitle(name)
+    plt.tight_layout()
     plt.show()
 
-# 6. Compare feature maps
-print("\nComparison:")
-print("Early        : Edges and simple textures")
-print("Intermediate : Patterns, shapes and textures")
-print("Deep         : Complex and high-level features")
 
-# 7. Display learned filters
-filters = model.get_layer("conv1_conv").get_weights()[0]
+# ============================================================
+# 10. VISUALIZE LEARNED CONVOLUTIONAL FILTERS
+# ============================================================
 
-plt.figure(figsize=(8,4))
+filter_layer = model.get_layer("block1_conv1")
 
-for i in range(6):
-    plt.subplot(2,3,i+1)
-    plt.imshow(filters[:,:,0,i], cmap="gray")
+filters, biases = filter_layer.get_weights()
+
+print("\nFilter Layer:", filter_layer.name)
+print("Filter Shape:", filters.shape)
+
+# VGG16 first convolution has 64 filters of size 3 x 3 x 3
+
+plt.figure(figsize=(10, 10))
+
+for i in range(16):
+
+    f = filters[:, :, :, i]
+
+    # Normalize filter values for display
+    f_min = f.min()
+    f_max = f.max()
+
+    f = (f - f_min) / (f_max - f_min + 1e-8)
+
+    plt.subplot(4, 4, i + 1)
+
+    plt.imshow(f)
+    plt.title("Filter " + str(i + 1))
     plt.axis("off")
 
-plt.suptitle("Convolution Filters")
+plt.suptitle("Learned Filters - block1_conv1")
+plt.tight_layout()
 plt.show()
+
+
+# ============================================================
+# 11. COMPARE FEATURE MAP DIMENSIONS
+# ============================================================
+
+print("\n========== DIMENSION COMPARISON ==========")
+
+for name, feature in zip(layer_names, features):
+
+    print(
+        name,
+        "->",
+        feature.shape
+    )
+
+print("\nExperiment Completed")

@@ -1,111 +1,225 @@
-import numpy as np
 import tensorflow as tf
-from tensorflow.keras.applications import ResNet50
-from tensorflow.keras.applications.resnet50 import preprocess_input
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+
+from tensorflow.keras.applications import VGG16
+from tensorflow.keras.applications.vgg16 import preprocess_input
+from tensorflow.keras.utils import image_dataset_from_directory
+from tensorflow.keras.layers import Input, Embedding, LSTM, Dense, RepeatVector
+from tensorflow.keras.models import Model
 from tensorflow.keras.preprocessing.text import Tokenizer
 from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, LSTM, Dense, Embedding
-from tensorflow.keras.utils import get_file
-from PIL import Image
 
-# 1. CNN encoder
-cnn = ResNet50(weights="imagenet", include_top=False, pooling="avg")
 
-# 2. Images and captions
-urls = [
-    "https://storage.googleapis.com/download.tensorflow.org/example_images/592px-Red_sunflower.jpg",
-    "https://storage.googleapis.com/download.tensorflow.org/example_images/grace_hopper.jpg"
+# 1. Load dataset
+
+DATASET = "imagenette-160"
+
+selected_classes = [
+    "n01440764",
+    "n02102040",
+    "n03028079",
+    "n03445777",
+    "n03888257"
+]
+
+dataset = image_dataset_from_directory(
+    os.path.join(DATASET, "train"),
+    class_names=selected_classes,
+    image_size=(224, 224),
+    batch_size=10,
+    shuffle=True
+)
+
+# 2. Load pretrained CNN encoder
+
+cnn = VGG16(
+    weights="imagenet",
+    include_top=False,
+    pooling="avg"
+)
+
+print("VGG16 Encoder Loaded")
+
+# 3. Get images and labels
+
+images, labels = next(iter(dataset))
+
+plt.imshow(images[0].numpy().astype("uint8"))
+plt.title(selected_classes[int(labels[0].numpy())])
+plt.axis("off")
+plt.show()
+
+# 4. Extract image features
+
+x = preprocess_input(
+    images.numpy().astype(np.float32)
+)
+
+features = cnn.predict(x, verbose=0)
+
+print("Feature Shape:", features.shape)
+
+# 5. Convert class labels into captions
+
+class_names = [
+    "tench",
+    "English springer",
+    "church",
+    "golf ball",
+    "parachute"
 ]
 
 captions = [
-    "a photo of a sunflower",
-    "a photo of a person"
+    "startseq a photo of a " + class_names[int(label)] + " endseq"
+    for label in labels.numpy()
 ]
 
-# 3. Extract CNN features
-X = []
+  print("Example Caption:", captions[0])
 
-for url in urls:
-    file = get_file(url.split("/")[-1], url)
-    img = Image.open(file).resize((224,224))
-    img = preprocess_input(np.array(img))
-    X.append(img)
+# 6. Tokenize captions
 
-X = cnn.predict(np.array(X))
+tokenizer = Tokenizer(
+    filters="",
+    lower=True
+)
 
-# 4. Add START and END
-captions = ["start " + c + " end" for c in captions]
+tokenizer.fit_on_texts(captions)
 
-# 5. Tokenize
-tok = Tokenizer()
-tok.fit_on_texts(captions)
+sequences = tokenizer.texts_to_sequences(captions)
 
-seq = tok.texts_to_sequences(captions)
-seq = pad_sequences(seq, padding="post")
+vocab_size = len(tokenizer.word_index) + 1
+max_length = max(len(seq) for seq in sequences)
 
-vocab = len(tok.word_index) + 1
+sequences = pad_sequences(
+    sequences,
+    maxlen=max_length,
+    padding="post"
+)
 
-# 6. Input and output
-decoder_in = seq[:, :-1]
-decoder_out = seq[:, 1:]
+print("Vocabulary Size:", vocab_size)
+print("Caption Sequence Shape:", sequences.shape)
 
-# 7. LSTM decoder
-image = Input(shape=(2048,))
-text = Input(shape=(decoder_in.shape[1],))
+# 7. Prepare next-word training sequences
 
-img = Dense(128, activation="relu")(image)
-img = tf.keras.layers.RepeatVector(decoder_in.shape[1])(img)
+X_img = []
+X_seq = []
+y_word = []
 
-word = Embedding(vocab, 128)(text)
+for i, seq in enumerate(sequences):
 
-x = tf.keras.layers.Concatenate()([img, word])
-x = LSTM(128, return_sequences=True)(x)
-output = Dense(vocab, activation="softmax")(x)
+    for j in range(1, len(seq)):
 
-model = Model([image, text], output)
+        X_img.append(features[i])
+        X_seq.append(
+            pad_sequences(
+                [seq[:j]],
+                maxlen=max_length - 1,
+                padding="post"
+            )[0]
+        )
+        y_word.append(seq[j])
+
+X_img = np.array(X_img)
+X_seq = np.array(X_seq)
+y_word = np.array(y_word)
+
+# 8. Build LSTM decoder
+
+image_input = Input(shape=(512,))
+image_features = Dense(128, activation="relu")(image_input)
+image_features = RepeatVector(max_length - 1)(image_features)
+
+text_input = Input(shape=(max_length - 1,))
+text_features = Embedding(
+    vocab_size,
+    128,
+    mask_zero=True
+)(text_input)
+
+merged = tf.keras.layers.Concatenate()(
+    [image_features, text_features]
+)
+
+lstm_output = LSTM(128)(merged)
+output = Dense(vocab_size, activation="softmax")(lstm_output)
+
+model = Model(
+    inputs=[image_input, text_input],
+    outputs=output
+)
 
 model.compile(
     optimizer="adam",
-    loss="sparse_categorical_crossentropy"
+    loss="sparse_categorical_crossentropy",
+    metrics=["accuracy"]
 )
 
-# 8. Train
+# 9. Train caption decoder
+
 model.fit(
-    [X, decoder_in],
-    np.expand_dims(decoder_out, -1),
-    epochs=10
+    [X_img, X_seq],
+    y_word,
+    epochs=30,
+    verbose=1
 )
 
-print("Model trained!")
-print("Vocabulary:", tok.word_index)
+print("CNN-LSTM Model Trained")
+
+# 10. Generate caption for an image
 
 def generate_caption(feature):
-    
-    text = [tok.word_index["start"]]
 
-    for i in range(8):
+    caption = ["startseq"]
 
-        s = pad_sequences(
-            [text],
-            maxlen=decoder_in.shape[1],
+    for _ in range(max_length):
+
+        seq = tokenizer.texts_to_sequences(
+            [" ".join(caption)]
+        )
+
+        seq = pad_sequences(
+            seq,
+            maxlen=max_length - 1,
             padding="post"
         )
 
-        p = model.predict([feature, s], verbose=0)
+        prediction = model.predict(
+            [feature.reshape(1, 512), seq],
+            verbose=0
+        )
 
-        word = np.argmax(p[0, len(text)-1])
+        word_id = np.argmax(prediction[0])
 
-        if word == 0:
+        word = tokenizer.index_word.get(word_id, "")
+
+        if word == "endseq" or word == "":
             break
 
-        w = tok.index_word[word]
+        caption.append(word)
 
-        if w == "end":
-            break
+    return " ".join(
+        word for word in caption
+        if word != "startseq"
+    )
 
-        text.append(word)
 
-    return " ".join(tok.index_word[i] for i in text[1:])
+# 11. Display generated caption
 
-print("Generated caption:", generate_caption(X[0:1]))
+index = 0
+
+generated = generate_caption(features[index])
+
+print("\nExpected Caption:")
+print(captions[index])
+
+print("\nGenerated Caption:")
+print(generated)
+
+plt.imshow(images[index].numpy().astype("uint8"))
+plt.title("Generated: " + generated)
+plt.axis("off")
+plt.show()
+
+print("\nExperiment Completed")
